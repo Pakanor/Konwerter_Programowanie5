@@ -1,0 +1,3 @@
+To jest przykładowy dokument tekstowy.
+Zawiera polskie znaki: ą, ę, ś, ł, ż, ź, ć, ń.
+Lab 2 konwersja TXT -> DOCX działa poprawnie.
