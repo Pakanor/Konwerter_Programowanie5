@@ -1,9 +1,16 @@
 from pathlib import Path
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from core.registry import ConversionRequest, execute, available_targets, REGISTRY
-import converters  
+import converters
+
+ACCENT = "#2563eb"
+OK_GREEN = "#166534"
+ERR_RED = "#dc2626"
+MUTE_GRAY = "#555555"
+
 
 class ConverterApp:
     def __init__(self, root: tk.Tk):
@@ -15,42 +22,52 @@ class ConverterApp:
         self.output_dir_var = tk.StringVar()
         self.target_var = tk.StringVar()
 
+        self._setup_styles()
         self._build_ui()
 
+    def _setup_styles(self) -> None:
+        style = ttk.Style(self.root)
+        style.theme_use("clam")
+        style.configure("Header.TLabel", font=("Segoe UI", 13, "bold"), foreground=ACCENT)
+        style.configure("Convert.TButton", font=("Segoe UI", 10, "bold"))
+        style.configure("Status.TLabel", foreground=MUTE_GRAY)
+        style.configure("StatusOk.TLabel", foreground=OK_GREEN)
+        style.configure("StatusErr.TLabel", foreground=ERR_RED)
+
     def _build_ui(self) -> None:
-        frame = ttk.Frame(self.root, padding=16)
+        frame = ttk.Frame(self.root, padding=18)
         frame.grid(row=0, column=0, sticky="nsew")
 
-        # Plik zrodlowy
-        ttk.Label(frame, text="Plik zrodlowy:").grid(row=0, column=0, sticky="w", pady=(0, 4))
-        ttk.Entry(frame, textvariable=self.source_var, width=52).grid(row=1, column=0, sticky="we", pady=(0, 8))
-        ttk.Button(frame, text="Wybierz plik...", command=self._choose_source).grid(row=1, column=1, padx=(8, 0), pady=(0, 8))
+        header = ttk.Label(frame, text="Konwerter plikow", style="Header.TLabel")
+        header.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 14))
 
-        # Katalog docelowy
-        ttk.Label(frame, text="Katalog docelowy:").grid(row=2, column=0, sticky="w", pady=(0, 4))
-        ttk.Entry(frame, textvariable=self.output_dir_var, width=52).grid(row=3, column=0, sticky="we", pady=(0, 8))
-        ttk.Button(frame, text="Wybierz katalog...", command=self._choose_output_dir).grid(row=3, column=1, padx=(8, 0), pady=(0, 8))
+        ttk.Separator(frame, orient="horizontal").grid(row=1, column=0, columnspan=2, sticky="we", pady=(0, 12))
 
-        # Format docelowy
-        ttk.Label(frame, text="Format docelowy:").grid(row=4, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(frame, text="Plik zrodlowy:").grid(row=2, column=0, sticky="w", pady=(0, 4))
+        ttk.Entry(frame, textvariable=self.source_var, width=52).grid(row=3, column=0, sticky="we", pady=(0, 8))
+        ttk.Button(frame, text="Wybierz plik...", command=self._choose_source).grid(row=3, column=1, padx=(8, 0), pady=(0, 8))
+
+        ttk.Label(frame, text="Katalog docelowy:").grid(row=4, column=0, sticky="w", pady=(0, 4))
+        ttk.Entry(frame, textvariable=self.output_dir_var, width=52).grid(row=5, column=0, sticky="we", pady=(0, 8))
+        ttk.Button(frame, text="Wybierz katalog...", command=self._choose_output_dir).grid(row=5, column=1, padx=(8, 0), pady=(0, 8))
+
+        ttk.Label(frame, text="Format docelowy:").grid(row=6, column=0, sticky="w", pady=(0, 4))
         self.target_combo = ttk.Combobox(
             frame,
             textvariable=self.target_var,
             width=50,
             state="readonly",
         )
-        self.target_combo.grid(row=5, column=0, columnspan=2, sticky="we", pady=(0, 12))
+        self.target_combo.grid(row=7, column=0, columnspan=2, sticky="we", pady=(0, 12))
         self.target_combo.bind("<<ComboboxSelected>>", lambda _e: self._update_convert_state())
 
-        # Przycisk konwersji
-        self.convert_btn = ttk.Button(frame, text="Konwertuj", command=self._convert)
-        self.convert_btn.grid(row=6, column=0, columnspan=2, pady=(0, 8))
+        self.convert_btn = ttk.Button(frame, text="Konwertuj", command=self._convert, style="Convert.TButton")
+        self.convert_btn.grid(row=8, column=0, columnspan=2, pady=(0, 10))
         self._update_convert_state()
 
-        # Status
         self.status_var = tk.StringVar(value="Gotowy.")
-        status = ttk.Label(frame, textvariable=self.status_var, foreground="#555555")
-        status.grid(row=7, column=0, columnspan=2, sticky="w")
+        self.status_label = ttk.Label(frame, textvariable=self.status_var, style="Status.TLabel")
+        self.status_label.grid(row=9, column=0, columnspan=2, sticky="w")
 
         frame.columnconfigure(0, weight=1)
 
@@ -79,8 +96,10 @@ class ConverterApp:
             self.target_var.set("")
         self._update_convert_state()
         if not targets:
+            self.status_label.configure(style="StatusErr.TLabel")
             self.status_var.set(f"Brak obslugiwanych formatow docelowych dla {source.suffix or '(brak rozszerzenia)'}.")
         else:
+            self.status_label.configure(style="StatusOk.TLabel")
             self.status_var.set(f"Dostępne cele: {', '.join(targets)}")
 
     def _update_convert_state(self) -> None:
@@ -122,17 +141,33 @@ class ConverterApp:
                 icon=messagebox.WARNING,
             )
             if not answer:
+                self.status_label.configure(style="Status.TLabel")
                 self.status_var.set("Anulowano - plik nie zostal nadpisany.")
                 return
 
+        self.convert_btn.state(["disabled"])
+        self.status_var.set("Konwertuje, prosze czekac...")
+        threading.Thread(target=self._run_conversion, args=(source, target_format, output_dir), daemon=True).start()
+
+    def _run_conversion(self, source: Path, target_format: str, output_dir: Path) -> None:
         try:
             request = ConversionRequest(source, target_format, output_dir)
             result = execute(request)
-            self.status_var.set(f"Sukces: zapisano {result.name}")
-            messagebox.showinfo("Sukces", f"Plik zostal zapisany:\n{result}")
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("Blad konwersji", str(exc))
-            self.status_var.set(f"Blad: {exc}")
+            self.root.after(0, lambda r=result: self._on_conversion_success(r))
+        except Exception as exc:
+            self.root.after(0, lambda e=exc: self._on_conversion_error(e))
+
+    def _on_conversion_success(self, result: Path) -> None:
+        self.convert_btn.state(["!disabled"])
+        self.status_label.configure(style="StatusOk.TLabel")
+        self.status_var.set(f"Sukces: zapisano {result.name}")
+        messagebox.showinfo("Sukces", f"Plik zostal zapisany:\n{result}")
+
+    def _on_conversion_error(self, exc: Exception) -> None:
+        self.convert_btn.state(["!disabled"])
+        self.status_label.configure(style="StatusErr.TLabel")
+        messagebox.showerror("Blad konwersji", str(exc))
+        self.status_var.set(f"Blad: {exc}")
 
 
 def main() -> None:
